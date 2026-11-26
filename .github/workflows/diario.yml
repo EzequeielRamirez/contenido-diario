@@ -1,0 +1,54 @@
+name: Video diario
+on:
+  schedule:
+    # Se arma 1 hora antes y espera la hora exacta. Horas en UTC (Argentina = UTC-3):
+    - cron: "30 14 * * *"   # arma 11:30 ART  -> publica 12:30 ART (almuerzo)
+    - cron: "30 20 * * *"   # arma 17:30 ART  -> publica 18:30 ART (regreso a casa)
+    - cron: "30 23 * * *"   # arma 20:30 ART  -> publica 21:30 ART (sillón)
+  workflow_dispatch:
+    inputs:
+      slot: { description: "almuerzo | regreso | sillon", required: true, default: "almuerzo" }
+      dry_run: { description: "true = solo generar el video, no publicar", required: true, default: "true" }
+permissions:
+  contents: write
+concurrency: { group: "video-${{ github.event.schedule || inputs.slot }}", cancel-in-progress: false }
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - name: Elegir slot
+        id: s
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_SLOT: ${{ inputs.slot }}
+          IN_DRY: ${{ inputs.dry_run }}
+          SCHED: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            case "$IN_SLOT" in almuerzo|regreso|sillon) echo "slot=$IN_SLOT" >> $GITHUB_OUTPUT;; *) echo "slot inválido"; exit 1;; esac
+            if [ "$IN_DRY" = "true" ]; then echo "args=--dry-run" >> $GITHUB_OUTPUT; fi
+          else
+            case "$SCHED" in
+              "30 14 * * *") echo "slot=almuerzo" >> $GITHUB_OUTPUT;;
+              "30 20 * * *") echo "slot=regreso" >> $GITHUB_OUTPUT;;
+              "30 23 * * *") echo "slot=sillon" >> $GITHUB_OUTPUT;;
+            esac
+          fi
+      - name: Generar y publicar
+        run: python src/run.py ${{ steps.s.outputs.slot }} ${{ steps.s.outputs.args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "video-${{ steps.s.outputs.slot }}", path: out/, retention-days: 7 }
